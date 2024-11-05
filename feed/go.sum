@@ -1,0 +1,4 @@
+github.com/aristanetworks/goarista v0.0.0-20241101122619-a6d58bf1ed81 h1:CpeoPCow/Xuh0YFFHqpnW82eRjnoN7q2sxw2In7/1qM=
+github.com/aristanetworks/goarista v0.0.0-20241101122619-a6d58bf1ed81/go.mod h1:C+YeQrhbMvCPh5wG6iqGiCD/zcITTpt4YQ1v4K0g5Vc=
+github.com/tomochain/tomochain v1.5.7 h1:8b5WT3AzYxmDVOni3K+aTj9Fur6Xf0rddDaGjghwjqw=
+github.com/tomochain/tomochain v1.5.7/go.mod h1:P2WCRgVo6taq0uP7EMLjuxtGY2ISiIFgZ+ZZ1DzQDxc=
