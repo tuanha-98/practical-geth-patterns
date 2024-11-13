@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"math/big"
@@ -68,66 +69,79 @@ func TestEthereumNodeWebSocket(t *testing.T) {
 	subscriptionConfirmed := make(chan struct{})
 	errCh := make(chan error, 1)
 
+	transactions := []*types.Transaction{
+		types.NewTransaction(0, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(1, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(2, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(3, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(4, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(5, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+		types.NewTransaction(6, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
+	}
+
 	var wgRead sync.WaitGroup
-	wgRead.Add(9)
 
-	go func() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wgRead.Add(8)
+	go func(ctx context.Context) {
 		defer close(errCh)
-		for {
-			defer wgRead.Done()
-			time.Sleep(2 * time.Second)
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				errCh <- err
-				return
-			}
-
-			var subResponse SubscriptionResponse
-			if err := json.Unmarshal(msg, &subResponse); err == nil && subResponse.Result != "" {
-				log.Println("Subscription confirmed: ", subResponse)
-				close(subscriptionConfirmed)
-			} else {
-				var txResponse NewPendingTxResponse
-				if err := json.Unmarshal(msg, &txResponse); err == nil && txResponse.Params.Result != "" {
-					log.Println("New pending txs: ", txResponse)
-				}
-			}
-		}
-	}()
-
-	var wgWrite sync.WaitGroup
-	go func() {
 	loop:
 		for {
 			select {
+			case <-ctx.Done():
+				break loop
+			default:
+				time.Sleep(2 * time.Second)
+				_, msg, err := conn.ReadMessage()
+
+				if err != nil {
+					errCh <- err
+					return
+				}
+
+				var subResponse SubscriptionResponse
+				if err := json.Unmarshal(msg, &subResponse); err == nil && subResponse.Result != "" {
+					log.Println("Subscription confirmed: ", subResponse)
+					close(subscriptionConfirmed)
+				} else {
+					var txResponse NewPendingTxResponse
+					if err := json.Unmarshal(msg, &txResponse); err == nil && txResponse.Params.Result != "" {
+						log.Println("New pending txs: ", txResponse)
+					}
+				}
+				wgRead.Done()
+			}
+
+		}
+	}(ctx)
+
+	var wgWrite sync.WaitGroup
+	wgWrite.Add(len(transactions))
+	go func(ctx context.Context) {
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
+				break loop
 			case err := <-errCh:
 				log.Fatalf("Error: %v", err)
 			case <-subscriptionConfirmed:
-				transactions := []*types.Transaction{
-					types.NewTransaction(0, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(1, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(2, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(3, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(4, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(5, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-					types.NewTransaction(6, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), 0, new(big.Int), nil),
-				}
-				wgWrite.Add(len(transactions))
-
 				for _, tx := range transactions {
-					go func(tx *types.Transaction) {
-						defer wgWrite.Done()
-						ev := core.NewTxsEvent{Txs: []*types.Transaction{tx}}
-						node.ethService.txPool.txFeed.Send(ev)
-					}(tx)
+					ev := core.NewTxsEvent{Txs: []*types.Transaction{tx}}
+					node.ethService.txPool.txFeed.Send(ev)
+					wgWrite.Done()
 				}
 				break loop
 			default:
 				time.Sleep(1 * time.Second)
 			}
 		}
-	}()
+	}(ctx)
 
-	wgRead.Wait()
 	wgWrite.Wait()
+	wgRead.Wait()
+
+	log.Println("All work completed. Canceling context.")
+	cancel()
 }
