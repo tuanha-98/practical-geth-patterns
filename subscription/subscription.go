@@ -2,14 +2,13 @@ package subscription
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -78,10 +77,8 @@ type subscription struct {
 	id        rpc.ID
 	typ       Type
 	created   time.Time
-	logsCrit  ethereum.FilterQuery
 	logs      chan []*types.Log
 	txs       chan []*types.Transaction
-	headers   chan *types.Header
 	installed chan struct{}
 	err       chan error
 }
@@ -107,6 +104,10 @@ func NewEventSystem(backend Backend) *EventSystem {
 	}
 
 	m.txsSub = m.backend.SubscribeNewTxsEvent(m.txsCh)
+
+	if m.txsSub == nil {
+		log.Fatal("Subscribe for event system failed")
+	}
 
 	go m.eventLoop()
 
@@ -134,24 +135,13 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 
 	rpcSub := notifier.CreateSubscription()
 
-	fmt.Println("NewPendingTransactions subscription created ", rpcSub)
-
 	go func() {
-		fmt.Println("Inside goroutine for pending transactions.")
 		txs := make(chan []*types.Transaction, 128)
-		fmt.Println(txs)
-
 		pendingTxSub := api.events.SubscribePendingTxEvents(txs)
-		fmt.Println("Pending transaction subscription started ", pendingTxSub)
 		for {
 			select {
 			case txs := <-txs:
-				fmt.Println("Received transactions:", len(txs))
-				if len(txs) == 0 {
-					fmt.Println("Received empty transaction list.")
-				}
 				for _, tx := range txs {
-					fmt.Println("Notifying transaction:", tx.Hash().Hex())
 					notifier.Notify(rpcSub.ID, tx.Hash())
 				}
 			case <-rpcSub.Err():
@@ -223,42 +213,6 @@ func (es *EventSystem) handleTxsEvent(filters filterIndex, ev core.NewTxsEvent) 
 	}
 }
 
-func (es *EventSystem) SubscribeLogs(crit ethereum.FilterQuery, logs chan []*types.Log) (*Subscription, error) {
-	var from, to rpc.BlockNumber
-	if crit.FromBlock == nil {
-		from = rpc.LatestBlockNumber
-	} else {
-		from = rpc.BlockNumber(crit.FromBlock.Int64())
-	}
-	if crit.ToBlock == nil {
-		to = rpc.LatestBlockNumber
-	} else {
-		to = rpc.BlockNumber(crit.ToBlock.Int64())
-	}
-
-	// only interested in pending logs
-	if from == rpc.PendingBlockNumber && to == rpc.PendingBlockNumber {
-		return es.subscribePendingLogs(crit, logs), nil
-	}
-
-	return nil, fmt.Errorf("invalid from and to block combination: from > to")
-}
-
-func (es *EventSystem) subscribePendingLogs(crit ethereum.FilterQuery, logs chan []*types.Log) *Subscription {
-	sub := &subscription{
-		id:        rpc.NewID(),
-		typ:       PendingLogsSubscription,
-		logsCrit:  crit,
-		created:   time.Now(),
-		logs:      logs,
-		txs:       make(chan []*types.Transaction),
-		headers:   make(chan *types.Header),
-		installed: make(chan struct{}),
-		err:       make(chan error),
-	}
-	return es.subscribe(sub)
-}
-
 func (es *EventSystem) eventLoop() {
 	defer es.txsSub.Unsubscribe()
 	index := make(filterIndex)
@@ -270,8 +224,10 @@ func (es *EventSystem) eventLoop() {
 	for {
 		select {
 		case ev := <-es.txsCh:
-			fmt.Println("Received txs event:", len(ev.Txs), "transactions")
 			es.handleTxsEvent(index, ev)
+		case f := <-es.install:
+			index[f.typ][f.id] = f
+			close(f.installed)
 		case <-es.txsSub.Err():
 			return
 		}
@@ -300,12 +256,18 @@ func (n *Node) StartRPC() error {
 			log.Printf("Failed to register API %s: %v", api.Namespace, err)
 		}
 	}
-	log.Println("WebSocket handler registered successfully")
+
+	var (
+		listener net.Listener
+		err      error
+	)
+	if listener, err = net.Listen("tcp", "localhost:8545"); err != nil {
+		return err
+	}
 
 	go func() {
-		if err := http.ListenAndServe(":8545", handler.WebsocketHandler([]string{"localhost:8545"})); err != nil {
-			log.Printf("HTTP server error: %v", err)
-		}
+		server := &http.Server{Handler: handler.WebsocketHandler([]string{"localhost:8545"})}
+		server.Serve(listener)
 	}()
 
 	n.wsHandler = handler
